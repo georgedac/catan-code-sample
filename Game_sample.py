@@ -1,0 +1,117 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Jun  4 00:31:26 2020
+@author: georgedac
+"""
+from Board import *
+from Player import *
+import numpy as np
+import threading
+import requests
+import time
+import math
+
+global button_clicked, pos
+
+class Game:
+    
+    def __init__(self, names, IDs, colors):
+        self.num_players = len(IDs)
+        self.players = []
+        for i in range(self.num_players):
+            self.players.append(player(names[i], IDs[i], colors[i]))
+        self.tiles = generate_tiles()
+        self.positions = generate_positions(self.tiles) 
+        self.bank = {
+                        'wheat': 19,
+                        'sheep': 19,
+                        'brick': 19,
+                        'wood': 19, 
+                        'ore': 19
+                    }
+        self.bank_dev_cards = ['knight']*14 + ['VP']*5 + ['road building']*2 + ['year of plenty']*2 + ['monopoly']*2
+        np.random.shuffle(self.bank_dev_cards)
+        self.turn = 0
+        self.stop = False
+
+    def start(self):
+        # Sets the turn order and directs players to place their two settlements and roads. Moves from first to last person and back.
+        np.random.shuffle(self.players)
+        for i in range(self.num_players):
+            self.players[i].turn_order = i
+        for player in self.players:
+            self.setup_turn(player)
+        self.players.reverse()
+        for player in self.players:
+            self.setup_turn(player)
+        self.players.reverse()
+        # After setup, it manages the turns. It continues to call play_turn, which returns False (to continue game) or True (to end it).
+        while not self.stop:
+            for player in self.players: 
+                self.stop = self.play_turn(player)
+                if self.stop:
+                    break      
+
+    def setup_turn(player):
+        # Directs player to choose a position for their settlement and associated road. Only called during game setup.
+        pos = -1
+        button_clicked = False
+        while True:
+            thread = threading.Thread(target=self.background_pos_selection(chosen=-1, current=str(player.name)))
+            # The target sets a one-minute countdown and waits for user to choose a position or for time to run out, whichever comes first.
+            thread.start()
+            thread.join()
+            # A settlement position "pos" has been selected now.
+            if self.positions[pos].valid_to_settle:
+                player.settlements.append(pos)
+                self.positions[pos].has_settlement_of = player
+                # vp = victory points = point system in the game. Not all points are visible to the other players.
+                player.vp += 1
+                player.public_vp += 1
+                if not self.positions[pos].port == None:
+                    player.port_access.append(self.positions[pos].port)
+                self.settlement_neighbors(self.positions[pos])
+                # Generate HTML to render settlement on screen
+                self.position_settlement_html(player)
+                player.mistake_msg = ''
+                break
+            else:
+                player.mistake_msg = 'That\'s not valid.'
+        button_clicked = False
+        # Now construct a road. Roads must either be connected to a settlement or to another road's endpoint.
+        while True:
+            road = [pos, 0]
+            # Wait for user selection of road's endpoint.
+            thread = threading.Thread(target=self.background_pos_selection(current=str(player.name)))
+            thread.start()
+            thread.join()
+            road[1] = pos          
+            if road[1] in self.positions[road[0]].has_road_to or self.positions[road[1]].valid_to_settle:
+                player.mistake_msg = 'Please try again.'
+            else:
+                self.positions[road[1]].has_road_to.append(road[0])
+                self.positions[road[0]].has_road_to.append(road[1])
+                player.roads.append(road)
+                self.position_roads_html(player, road)
+                player.mistake_msg = ''
+                break
+
+    def background_pos_selection(self, chosen=-1, current=''):
+        # This is called once at the beginning of a turn with chosen=-1 and once by the user if they choose a position to settle on
+        # In that case, chosen=pos (pos determined by user)
+        if chosen == -1:
+            for i in range(60):
+                url = 'http://settlersofcatangame-env.eba-dup4fpnf.us-west-2.elasticbeanstalk.com/current'
+                post_request = requests.post(url, data = 'current_player=' + current + ' time_left=' + str(60-i))
+                time.sleep(1)
+                if button_clicked: 
+                    # User chose a position on the page. Stop this first execution from running.
+                    break
+            else:
+                # User hasn't selected a position in time, so choose one for them (checking it's a valid location happens later).
+                pos = np.random.randint(1, 54)
+                return pos
+        else:
+            button_clicked = True
+            pos = chosen
+            return pos
